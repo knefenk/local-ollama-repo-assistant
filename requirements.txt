@@ -1,0 +1,6 @@
+gitpython
+chromadb
+langchain
+langchain-community
+ollama
+tqdm
