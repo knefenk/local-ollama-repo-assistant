@@ -1,6 +1,21 @@
-gitpython
-chromadb
-langchain
-langchain-community
-ollama
-tqdm
+# Core dependencies
+gitpython>=3.1.40
+tqdm>=4.66.1
+chromadb>=0.4.22
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-ollama>=0.0.1
+
+# Document parsing
+PyPDF2>=3.0.1
+python-docx>=1.1.0
+openpyxl>=3.1.2
+markdown>=3.5.1
+
+# Optional: Enhanced parsing capabilities
+# Uncomment if needed:
+# pandas>=2.1.4          # For advanced CSV/Excel analysis
+# beautifulsoup4>=4.12.2 # For HTML parsing
+# lxml>=4.9.3            # For faster XML parsing
+# pdfplumber>=0.10.3     # Alternative PDF parser (better for tables)
+# python-pptx>=0.6.23    # For PowerPoint files
