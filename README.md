@@ -43,7 +43,7 @@ source .venv/bin/activate       # Linux / macOS
 
 ```bash
 pip install --upgrade pip
-pip install gitpython tqdm chromadb langchain langchain-community langchain-ollama
+pip install -r requirements.txt
 ```
 
 ### 4. Pull Ollama models
@@ -123,3 +123,4 @@ Example session:
 ---
 
 **Made for local development and full data privacy.**
+
