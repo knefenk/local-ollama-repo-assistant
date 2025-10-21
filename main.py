@@ -1,136 +1,91 @@
-
-import os
 import logging
 from pathlib import Path
 from tqdm import tqdm
-from git import Repo, NULL_TREE
 
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_ollama import OllamaEmbeddings
-from langchain_ollama import OllamaLLM
-from langchain_classic.chains import RetrievalQA
 from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
+from langchain_ollama import OllamaEmbeddings, OllamaLLM
+from langchain_community.retrievers import BM25Retriever
+from langchain_core.callbacks.manager import CallbackManagerForRetrieverRun
 
 
-# ----------------------------
-# 1. CONFIGURATION
-# ----------------------------
-REPO_PATH = "C:/Users/knef/Desktop/Playground/agent/MBF_RL"     # e.g., "../myproject"
-INDEX_DIR = "./data/repo_index"
+# CONFIG
+REPO_PATH = "./okvis2"
+INDEX_DIR = "./data/okvis2"
 OLLAMA_EMBED = "nomic-embed-text"
 OLLAMA_LLM = "codellama:latest"
 
-# ----------------------------
-# 2. LOAD CODE FILES
-# ----------------------------
-def load_repo_code(repo_path):
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+def load_code_docs(repo_path: str):
     docs = []
-    for file in Path(repo_path).rglob("*.*"):
-        if file.suffix.lower() in [".py", ".js", ".ts", ".cpp", ".java", ".md", ".txt", ".json", ".yaml"]:
+    p = Path(repo_path)
+    exts = {".py", ".js", ".ts", ".cpp", ".java", ".md", ".txt", ".json", ".yaml", ".yml"}
+    for f in p.rglob("*.*"):
+        if f.suffix.lower() in exts:
             try:
-                text = file.read_text(errors="ignore")
-                docs.append(Document(page_content=text, metadata={
-                    "type": "code",
-                    "path": str(file.relative_to(repo_path))
-                }))
-            except Exception:
-                pass
-    print(f"Loaded {len(docs)} code documents.")
+                text = f.read_text(errors="ignore")
+                if text.strip():
+                    docs.append(Document(page_content=text, metadata={"path": str(f.relative_to(p)), "extension": f.suffix}))
+            except Exception as e:
+                logging.warning(f"read fail {f}: {e}")
+    logging.info(f"Loaded {len(docs)} files")
     return docs
 
-# ----------------------------
-# 3. LOAD COMMITS + DIFFS
-# ----------------------------
-def load_git_commits(repo_path, max_commits=200):
-    repo = Repo(repo_path)
-    commits = []
-    for commit in tqdm(list(repo.iter_commits("Dev", max_count=max_commits)), desc="Parsing commits"):
-        message = commit.message.strip().replace("\n", " ")
-        diff_text = ""
-        try:
-            diffs = commit.diff(commit.parents[0]) if commit.parents else commit.diff(NULL_TREE)
-            for d in diffs:
-                diff_text += f"File: {d.a_path or d.b_path}\n"
-                if d.diff:
-                    diff_text += d.diff.decode("utf-8", errors="ignore")[:1500] + "\n"
-        except Exception:
-            pass
-
-        content = f"Commit: {commit.hexsha[:8]}\nDate: {commit.committed_datetime}\nMessage: {message}\nChanges:\n{diff_text}"
-        commits.append(Document(page_content=content, metadata={
-            "type": "commit",
-            "hash": commit.hexsha,
-            "author": commit.author.name,
-            "date": str(commit.committed_datetime)
-        }))
-    print(f"Loaded {len(commits)} commits.")
-    return commits
-
-# ----------------------------
-# 4. SPLIT & EMBED
-# ----------------------------
-def build_vectorstore(all_docs):
+def build_index(docs):
     splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    split_docs = splitter.split_documents(all_docs)
-    print(f"Split into {len(split_docs)} chunks.")
+    logging.info("Splitting documents...")
+    split_docs = splitter.split_documents(docs)
+    logging.info(f"{len(split_docs)} chunks")
+
+    logging.info("Creating embeddings and Chroma index...")
     embeddings = OllamaEmbeddings(model=OLLAMA_EMBED)
-    db = Chroma.from_documents(split_docs, embeddings, persist_directory=INDEX_DIR)
-    print("Vector index built & saved.")
-    return db
+    db = Chroma.from_documents(split_docs, embedding=embeddings, persist_directory=INDEX_DIR)
+    logging.info("Index ready")
+    return db, split_docs
 
-# ----------------------------
-# 5. QUERY PIPELINE
-# ----------------------------
-def build_qa_chain(db):
-    llm = OllamaLLM(model=OLLAMA_LLM)
-    retriever = db.as_retriever(search_kwargs={"k": 6})
-    qa = RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=retriever,
-        return_source_documents=True
-    )
-    return qa
+def build_bm25(split_docs):
+    logging.info("Building BM25 index...")
+    bm25 = BM25Retriever.from_documents(split_docs)
+    bm25.k = 6
+    return bm25
 
-# ----------------------------
-# 6. MAIN
-# ----------------------------
+def hybrid_search(query: str, db, bm25, k=6):
+    # vector retrieval
+    vect_retriever = db.as_retriever(search_kwargs={"k": k})
+    vdocs = vect_retriever._get_relevant_documents(query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager())
+    bdocs = bm25._get_relevant_documents(query, run_manager=CallbackManagerForRetrieverRun.get_noop_manager())
+    # merge keeping order and dedupe by content
+    seen = set()
+    merged = []
+    for d in (vdocs + bdocs):
+        key = (d.metadata.get("path"), d.page_content[:200])
+        if key not in seen:
+            seen.add(key)
+            merged.append(d)
+            if len(merged) >= k:
+                break
+    return merged
+
+def generate_answer(prompt: str, model_name=OLLAMA_LLM):
+    llm = OllamaLLM(model=model_name)
+    return llm.invoke(prompt)
+
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler()]
-    )
+    docs = load_code_docs(REPO_PATH)
+    db, split_docs = build_index(docs)
+    bm25 = build_bm25(split_docs)
 
-    os.makedirs(INDEX_DIR, exist_ok=True)
-    logging.info("Loading code files...")
-    code_docs = load_repo_code(REPO_PATH)
-    logging.info("Loading git commits...")
-    commit_docs = load_git_commits(REPO_PATH)
-    all_docs = code_docs + commit_docs
-
-    logging.info("Building vector store...")
-    db = build_vectorstore(all_docs)
-    logging.info("Building QA chain...")
-    qa = build_qa_chain(db)
-
-    logging.info("Ready! Ask something about your repo.")
+    print("Ready. Type queries (exit to quit).")
     while True:
-        logging.info("Waiting for user query...")
-        q = input("🔍 Query> ").strip()
-        if not q or q.lower() in ["exit", "quit"]:
-            logging.info("Exiting interactive loop.")
+        q = input("> ").strip()
+        if not q or q.lower() in ("exit","quit"):
             break
-        logging.info(f"Processing query: {q}")
-        try:
-            result = qa.invoke({"query": q})
-            logging.info("Query processed successfully.")
-        except Exception as e:
-            logging.error(f"Error during query processing: {e}")
-            continue
-        print("\n💡 Answer:\n", result["result"], "\n")
-        print("📚 Sources:")
-        for src in result["source_documents"]:
-            print(" -", src.metadata.get("path") or src.metadata.get("hash"))
-        print()
+        hits = hybrid_search(q, db, bm25, k=6)
+        context = "\n\n".join([h.page_content[:1000] for h in hits])
+        prompt = f"Context:\n{context}\n\nQuestion:\n{q}\n\nAnswer concisely:"
+        ans = generate_answer(prompt)
+        print("\n--- ANSWER ---\n", ans, "\n\n--- SOURCES ---")
+        for i,h in enumerate(hits,1):
+            print(f"[{i}] {h.metadata.get('path')} ({h.metadata.get('extension')})")
