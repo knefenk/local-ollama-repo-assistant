@@ -16,7 +16,7 @@ No API keys, no external calls — runs fully offline.
 
 ## 🧩 Requirements
 - Python 3.10+  
-- Ollama installed and running locally  
+- Ollama installed and running locally: See [Guide](https://ollama.com/download) here  
 - Git installed  
 - (Optional) GPU with ≥8 GB VRAM for faster inference  
 
@@ -123,4 +123,5 @@ Example session:
 ---
 
 **Made for local development and full data privacy.**
+
 
